@@ -4,8 +4,8 @@
 using namespace tftpc;
 
 void strncpy_inc_offset(uint8_t* buffer, const char* str, size_t len, uint16_t& offset) {
-	strncpy(reinterpret_cast<char*>(buffer + offset), str, len);
-	offset += len;
+	std::copy(str, str + len, buffer + offset);
+	offset += static_cast<uint16_t>(len);
 	buffer[offset++] = '\0';
 }
 
@@ -138,7 +138,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			data_queue.pop();
 		}
 
-		buffer_offset = data_chunk->size();
+		buffer_offset = static_cast<uint16_t>(data_chunk->size());
 
 		data_header[2] = block_num >> 8;
 		data_header[3] = block_num & 0xFF;

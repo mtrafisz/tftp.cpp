@@ -28,7 +28,7 @@ namespace tftpc {
 
     /* Things You can edit, to change how library works: */
     struct Config {
-		static constexpr uint16_t BlockSize = 16e+3;     // smaller -> better for smaller files and bad connections but VERY SLOW
+		static constexpr uint16_t BlockSize = 16182;     // smaller -> better for smaller files and bad connections but VERY SLOW
 		// ^ TODO thing crashes with 32k block size XD
         static constexpr uint16_t Timeout = 5;
         static constexpr uint16_t MaxRetries = 5;
