@@ -22,11 +22,14 @@
 
 namespace tftpc {
 
+    /* Things You can edit, to change how library works: */
     struct Config {
-        static constexpr uint16_t BlockSize = 512;      // can't be guaranteed
+		static constexpr uint16_t BlockSize = 16e+3;     // smaller -> better for smaller files and bad connections but VERY SLOW
+		// ^ TODO thing crashes with 32k block size XD
         static constexpr uint16_t Timeout = 5;
         static constexpr uint16_t MaxRetries = 5;
     };
+    // thats it :)
 
     class TftpError : public std::runtime_error {
     public:
@@ -58,8 +61,21 @@ namespace tftpc {
 
     class Client {
     public:
+        /// <summary>
+		/// Attempts to read data from stream and send it to the server via TFTP.
+        /// </summary>
+        /// <param name="remote_addr">IPv4 address of server.</param>
+        /// <param name="filename">How the file will be saved on server.</param>
+        /// <param name="data">Stream containing desired file contents.</param>
         static void send(const struct sockaddr_in& remote_addr, const std::string& filename, std::istream& data);
-        static void recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data);
+        /// <summary>
+		/// Attempts to read data from server via TFTP and write it to stream.
+        /// </summary>
+		/// <param name="remote_addr">IPv4 address of server.</param>
+		/// <param name="filename">Name of the file on server.</param>
+		/// <param name="data">Stream to write file contents to.</param>'
+		/// <returns>Number of bytes received.</returns>
+        static std::streamsize recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data);
     
     private:
         class CleanupGuard {
@@ -80,7 +96,6 @@ namespace tftpc {
                 }
             }
             void dismiss() { needs_cleanup_ = false; }
-            // thread guard:
 			void guardThread(std::thread&& t) {
 				threads_.push_back(std::move(t));
 			}
