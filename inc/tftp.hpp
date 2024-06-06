@@ -15,10 +15,14 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <cstring>
 #include <ostream>
-#include <thread>
+#include <memory>
+#include <istream>      // for std::istream
+#include <cstring>
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include <queue>
 
 namespace tftpc {
 

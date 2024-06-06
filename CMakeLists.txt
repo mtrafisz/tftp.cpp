@@ -5,7 +5,6 @@ set (CMAKE_CXX_STANDARD 11)
 file (GLOB LIB_SOURCES "src/*.cpp")
 file (GLOB TEST_SOURCES "test/*.cpp")
 
-# add ws2_32 for windows
 if (WIN32)
 	list (APPEND libs "ws2_32")
 endif (WIN32)

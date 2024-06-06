@@ -1,21 +1,7 @@
 #include "../inc/tftp.hpp"
-#include <istream>      // for std::istream
-#include <cstring>
-#include <cassert>
-#include <iostream>
-// #include <future>
-#include <mutex>
-#include <thread>
-#include <queue>
+
 
 using namespace tftpc;
-
-//std::future<std::streamsize> asyncRead(std::istream& stream, uint8_t* buffer, std::streamsize size) {
-//	return std::async(std::launch::async, [&stream, buffer, size] {
-//		stream.read(reinterpret_cast<char*>(buffer), size);
-//		return stream.gcount();
-//		});
-//}
 
 void strncpy_inc_offset(uint8_t* buffer, const char* str, size_t len, uint16_t& offset) {
 	strncpy(reinterpret_cast<char*>(buffer + offset), str, len);
@@ -265,9 +251,9 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	std::streamsize total_size = 0;
 
 	switch (recv_buffer[1]) {
-	case static_cast<uint8_t>(TftpOpcode::Oack):
+	case static_cast<uint8_t>(TftpOpcode::Oack):	// TODO: check if params match
 		break;
-	case static_cast<uint8_t>(TftpOpcode::Data): {
+	case static_cast<uint8_t>(TftpOpcode::Data): {	// negotiation broken, received first data packet
 		uint16_t recv_blknum = (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF);
 		if (recv_blknum != 1)
 			throw TftpError(TftpError::ErrorType::Tftp, recv_blknum, "Invalid block number");
@@ -322,8 +308,8 @@ skip_zeroAck:
 			blksize_val = recv_offset - 4;
 			block_num++;
 			total_size += blksize_val;
+			break;
 		}
-		break;
 		case static_cast<uint8_t>(TftpOpcode::Error):
 			throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), reinterpret_cast<char*>(recv_buffer + 4));
 		default:
