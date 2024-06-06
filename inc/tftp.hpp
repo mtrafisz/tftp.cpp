@@ -17,6 +17,8 @@
 #include <vector>
 #include <cstring>
 #include <ostream>
+#include <thread>
+#include <iostream>
 
 namespace tftpc {
 
@@ -65,6 +67,10 @@ namespace tftpc {
             CleanupGuard(SOCKET sockfd) : sockfd_(sockfd), needs_cleanup_(true) {}
             ~CleanupGuard() {
                 if (needs_cleanup_) {
+					for (auto& t : threads_) {
+						t.join();
+					}
+
                     #ifdef _WIN32
                         closesocket(sockfd_);
                         WSACleanup();
@@ -74,9 +80,14 @@ namespace tftpc {
                 }
             }
             void dismiss() { needs_cleanup_ = false; }
+            // thread guard:
+			void guardThread(std::thread&& t) {
+				threads_.push_back(std::move(t));
+			}
 
         private:
             SOCKET sockfd_;
+			std::vector<std::thread> threads_;
             bool needs_cleanup_;
         };
     };
