@@ -49,10 +49,10 @@ std::streamsize getStreamLength(std::istream& stream) {
 void Client::send(const struct sockaddr_in& remote_addr, const std::string& filename, std::istream& data) {
 	std::streamsize length = getStreamLength(data);		// todo - does this allways work?
 
-	/* local address & socket setup */
+	/* local address, socket and cleanup guard setup */
 	struct sockaddr_in local_addr = {};
 	local_addr.sin_family = AF_INET;
-	local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(0);
 	size_t local_addr_len = sizeof(local_addr);
 
@@ -66,7 +66,6 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	socket_t sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to create socket");
 
-	// close socket and WSACleanup on exception
 	CleanupGuard guard(sockfd);
 
 	if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) == -1)
@@ -79,26 +78,13 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
-	// uint8_t* buffer = (uint8_t*)malloc(Config::BlockSize);
-	// uint8_t* recv_buffer = (uint8_t*)malloc(Config::BlockSize);
-
-	/*if (!buffer || !recv_buffer) {
-		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to allocate memory");
-	}*/
-
-	/*memset(buffer, 0, Config::BlockSize);
-	memset(recv_buffer, 0, Config::BlockSize);
-
-	guard.mallocGuard(buffer);
-	guard.mallocGuard(recv_buffer);*/
-
-	// allocate with new instead of malloc:
 	uint8_t* buffer = new uint8_t[Config::BlockSize]();
 	uint8_t* recv_buffer = new uint8_t[Config::BlockSize]();
 
 	guard.guardNew(buffer);
 	guard.guardNew(recv_buffer);
 
+	/* Create and send the request */
 	uint16_t buffer_offset = 2;
 	int32_t recv_offset = -1;
 	buffer[1] = static_cast<uint8_t>(TftpOpcode::WriteRequest);
@@ -106,6 +92,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	uint16_t blksize_val = Config::BlockSize;
 	std::string blksize_str = std::to_string(blksize_val);
 	std::string tsize_str = std::to_string(length);
+	std::string timeout_str = std::to_string(Config::Timeout);
 
 	strncpy_inc_offset(buffer, filename.c_str(), filename.size(), buffer_offset);
 	strncpy_inc_offset(buffer, "octet", 5, buffer_offset);
@@ -116,11 +103,13 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	strncpy_inc_offset(buffer, "blksize", 7, buffer_offset);
 	strncpy_inc_offset(buffer, blksize_str.c_str(), blksize_str.size(), buffer_offset);
 
-	// timeout - TODO
+	strncpy_inc_offset(buffer, "timeout", 8, buffer_offset);
+	strncpy_inc_offset(buffer, timeout_str.c_str(), timeout_str.size(), buffer_offset);
 
 	if (sendto(sockfd, reinterpret_cast<char*>(buffer), buffer_offset, 0, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send request");
 
+	/* Receive the server response and save new address of the server */
 	struct sockaddr_in comm_addr = {};
 	socklen_t comm_addr_len = sizeof(comm_addr);
 
@@ -128,8 +117,10 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to receive response");
 	if (recv_offset < 4) throw TftpError(TftpError::ErrorType::Tftp, 0, "Invalid response");
 
+	/* Parse the response */
 	switch (recv_buffer[1]) {
 	case static_cast<uint8_t>(TftpOpcode::Oack):
+		// TODO: check if params match
 		break;
 	case static_cast<uint8_t>(TftpOpcode::Ack):
 		blksize_val = 512;
@@ -140,12 +131,13 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 		throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
 	}
 
+	/* Data chunking and transfer */
 	uint16_t block_num = 1;
 	char data_header[4] = { 0, static_cast<uint8_t>(TftpOpcode::Data), 0, 0 };
 	std::queue<std::unique_ptr<std::vector<uint8_t>>> data_queue;
 	std::mutex data_queue_mutex;
 
-	// data chunker thread:
+	/* Chunk data into vectors with max. size of Config::BlockSize, except the last one */
 	std::thread data_chunker([&data, &data_queue, &data_queue_mutex, blksize_val] {
 		std::unique_ptr<std::vector<uint8_t>> data_chunk = std::make_unique<std::vector<uint8_t>>(blksize_val);
 		while (data.read(reinterpret_cast<char*>(data_chunk->data()), blksize_val)) {
@@ -160,12 +152,16 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 
 	guard.guardThread(std::move(data_chunker));
 
-	// data sender loop:
+	/* Data sending loop */
+
+	// wait for single data chunk to be available (data_queue.front() will throw if empty)
 	while (data_queue.size() == 0) continue;
 
 	int retries = Config::MaxRetries;
+	bool size_divisible = length % blksize_val == 0;
 
 	do {
+		// pop the front data chunk
 		std::unique_ptr<std::vector<uint8_t>> data_chunk = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(data_queue_mutex);
@@ -173,8 +169,10 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			data_queue.pop();
 		}
 
-		buffer_offset = static_cast<uint16_t>(data_chunk->size());
+		// set the buffer offset to the size of the data chunk
+		buffer_offset = static_cast<uint16_t>(data_chunk->size());	// this is one of conditions for the last chunk detection
 
+		// create the data Message with multiple buffers (header + data)
 		data_header[2] = block_num >> 8;
 		data_header[3] = block_num & 0xFF;
 
@@ -197,7 +195,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 		msg.msg_iov = packet;
 		msg.msg_iovlen = 2;
 #endif
-
+		// send the data Message
 	resend_data_packet:
 #ifdef _WIN32
 		DWORD bytes_sent;
@@ -209,6 +207,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 		if (sendmsg(sockfd, &msg, 0) == -1)
 			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 #endif
+		// receive the server response (exp. ack)
 		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
 			auto errn = getOsError();
 
@@ -222,6 +221,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			}
 		}
 
+		// parse the server response
 		switch (recv_buffer[1]) {
 		case static_cast<uint8_t>(TftpOpcode::Ack): {
 			uint16_t block_num_ack = (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF);
@@ -238,17 +238,24 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
 		}
 
-	} while (buffer_offset == blksize_val);
+	} while (buffer_offset == blksize_val && data_queue.size() != 0);
+
+	/* send empty data packet to signal end of transfer if there wasn't any data packet
+	 * with size smaller than Config::BlockSize */
+	if (size_divisible) {
+		data_header[2] = block_num >> 8;
+		data_header[3] = block_num & 0xFF;
+		buffer_offset = 0;
+	}
 
 	guard.forceCleanup();
-	std::cout << "nyaa" << std::endl;
 }
 
 std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data) {
 	/* local address & socket setup */
 	struct sockaddr_in local_addr = {};
 	local_addr.sin_family = AF_INET;
-	local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(0);
 	size_t local_addr_len = sizeof(local_addr);
 
@@ -262,7 +269,6 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	socket_t sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0) throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to create socket");
 
-	// close socket and WSACleanup on exception
 	CleanupGuard guard(sockfd);
 
 	if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) == -1)
@@ -275,8 +281,14 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
-	uint8_t buffer[Config::BlockSize + 4] = { 0 };
-	uint8_t recv_buffer[Config::BlockSize + 4] = { 0 };
+
+	/* Create and send the request */
+	uint8_t* buffer = new uint8_t[Config::BlockSize + 4]();
+	uint8_t* recv_buffer = new uint8_t[Config::BlockSize + 4]();
+
+	guard.guardNew(buffer);
+	guard.guardNew(recv_buffer);
+
 	uint16_t buffer_offset = 2;
 	int32_t recv_offset = -1;
 	buffer[1] = static_cast<uint8_t>(TftpOpcode::ReadRequest);
@@ -297,11 +309,14 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	if (sendto(sockfd, reinterpret_cast<char*>(buffer), buffer_offset, 0, (struct sockaddr*)&remote_addr, sizeof(remote_addr)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send request");
 
+	/* Receive the server response and save new address of the server */
 	struct sockaddr_in comm_addr = {};
 	socklen_t comm_addr_len = sizeof(comm_addr);
 
 	if ((recv_offset = recvfrom(sockfd, (char*)(recv_buffer), Config::BlockSize, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to receive a valid response");
+
+	/* Parse the response and send the ack */
 
 	uint8_t ack_buffer[4] = { 0, static_cast<uint8_t>(TftpOpcode::Ack), 0, 0 };
 	uint16_t block_num = 1;
@@ -320,7 +335,7 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 		ack_buffer[3] = recv_buffer[3];
 		block_num++;
 		total_size += blksize_val;
-		goto skip_zeroAck;
+		break;
 	}
 	case static_cast<uint8_t>(TftpOpcode::Error):
 		throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), reinterpret_cast<char*>(recv_buffer + 4));
@@ -331,11 +346,12 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	if (sendto(sockfd, reinterpret_cast<char*>(ack_buffer), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send ack");
 
-skip_zeroAck:
-
 	int retries = Config::MaxRetries;
 
+	/* Data receiving loop */
+
 	do {
+		// receive the server response (exp. data)
 		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize + 4, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
 			auto errn = getOsError();
 
@@ -349,6 +365,7 @@ skip_zeroAck:
 			}
 		}
 
+		// parse the server response
 		switch (recv_buffer[1]) {
 		case static_cast<uint8_t>(TftpOpcode::Data): {
 			uint16_t recv_blknum = (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF);
@@ -373,6 +390,7 @@ skip_zeroAck:
 			throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
 		}
 
+		// create and send the ack packet
 		ack_buffer[2] = recv_buffer[2];
 		ack_buffer[3] = recv_buffer[3];
 	resend_ack_packet:
@@ -383,6 +401,5 @@ skip_zeroAck:
 
 	guard.forceCleanup();
 
-	// cleanup left to the guard
 	return total_size;
 }
