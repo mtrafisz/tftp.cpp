@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 3.5)
 project (tftpc)
-set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_CXX_STANDARD 14)
 
 file (GLOB LIB_SOURCES "src/*.cpp")
 file (GLOB TEST_SOURCES "test/*.cpp")

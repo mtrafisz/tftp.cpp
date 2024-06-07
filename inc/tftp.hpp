@@ -31,10 +31,12 @@ namespace tftpc {
 	typedef int socklen_t;
 #define clean_sockfd(sockfd) do { closesocket(sockfd); WSACleanup(); } while(0)
 #define getOsError() WSAGetLastError()
+#define TIMEOUT_OS_ERR WSAETIMEDOUT
 #else
 	typedef int socket_t;
 #define clean_sockfd(sockfd) do { close(sockfd); } while(0)
 #define getOsError() errno
+#define TIMEOUT_OS_ERR ETIMEDOUT
 #endif
 
     /* Things You can edit, to change how library works: */
