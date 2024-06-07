@@ -83,4 +83,6 @@ int main(void) {
         return 1;
     }
 
+	std::cout << "Success!" << std::endl;
+
 }

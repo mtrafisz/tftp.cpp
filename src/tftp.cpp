@@ -1,20 +1,36 @@
 #include "../inc/tftp.hpp"
 
-
 using namespace tftpc;
+
+enum class TftpErrorCode : uint16_t {
+	NotDefined = 0,
+	FileNotFound = 1,
+	AccessViolation = 2,
+	DiskFull = 3,
+	IllegalOperation = 4,
+	UnknownTransferId = 5,
+	FileAlreadyExists = 6,
+	NoSuchUser = 7,
+};
+
+enum class TftpOpcode : uint16_t {
+	ReadRequest = 1,
+	WriteRequest = 2,
+	Data = 3,
+	Ack = 4,
+	Error = 5,
+	Oack = 6,
+};
+
+// u16 {a, b} -> u8 {b}
+uint8_t getOpcodeByte(TftpOpcode opcode) {
+	return static_cast<uint8_t>(static_cast<uint16_t>(opcode) & 0xFF);
+}
 
 void strncpy_inc_offset(uint8_t* buffer, const char* str, size_t len, uint16_t& offset) {
 	std::copy(str, str + len, buffer + offset);
 	offset += static_cast<uint16_t>(len);
 	buffer[offset++] = '\0';
-}
-
-uint32_t getOsError() {
-#ifdef _WIN32
-	return WSAGetLastError();
-#else
-	return errno;
-#endif
 }
 
 std::streamsize getStreamLength(std::istream& stream) {
@@ -60,8 +76,26 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
-	uint8_t buffer[Config::BlockSize] = { 0 };
-	uint8_t recv_buffer[Config::BlockSize] = { 0 };
+	// uint8_t* buffer = (uint8_t*)malloc(Config::BlockSize);
+	// uint8_t* recv_buffer = (uint8_t*)malloc(Config::BlockSize);
+
+	/*if (!buffer || !recv_buffer) {
+		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to allocate memory");
+	}*/
+
+	/*memset(buffer, 0, Config::BlockSize);
+	memset(recv_buffer, 0, Config::BlockSize);
+
+	guard.mallocGuard(buffer);
+	guard.mallocGuard(recv_buffer);*/
+
+	// allocate with new instead of malloc:
+	uint8_t* buffer = new uint8_t[Config::BlockSize]();
+	uint8_t* recv_buffer = new uint8_t[Config::BlockSize]();
+
+	guard.guardNew(buffer);
+	guard.guardNew(recv_buffer);
+
 	uint16_t buffer_offset = 2;
 	int32_t recv_offset = -1;
 	buffer[1] = static_cast<uint8_t>(TftpOpcode::WriteRequest);
@@ -107,8 +141,6 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	char data_header[4] = { 0, static_cast<uint8_t>(TftpOpcode::Data), 0, 0 };
 	std::queue<std::unique_ptr<std::vector<uint8_t>>> data_queue;
 	std::mutex data_queue_mutex;
-
-	/* Absolutely no performance improvements over simple memcpy loop, but it looks fancier */
 
 	// data chunker thread:
 	std::thread data_chunker([&data, &data_queue, &data_queue_mutex, blksize_val] {
@@ -185,9 +217,10 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
 		}
 
-	} while (buffer_offset == blksize_val && !data_queue.empty());
+	} while (buffer_offset == blksize_val);
 
-	// cleanup left to the guard
+	guard.forceCleanup();
+	std::cout << "nyaa" << std::endl;
 }
 
 std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data) {
@@ -323,6 +356,8 @@ skip_zeroAck:
 			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send ack");
 
 	} while (blksize_val == Config::BlockSize);
+
+	guard.forceCleanup();
 
 	// cleanup left to the guard
 	return total_size;

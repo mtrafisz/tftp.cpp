@@ -17,7 +17,7 @@
 #include <vector>
 #include <ostream>
 #include <memory>
-#include <istream>      // for std::istream
+#include <istream>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -26,15 +26,29 @@
 
 namespace tftpc {
 
+#ifdef _WIN32
+    typedef SOCKET socket_t;
+	typedef int socklen_t;
+#define clean_sockfd(sockfd) do { closesocket(sockfd); WSACleanup(); } while(0)
+#define getOsError() WSAGetLastError()
+#else
+	typedef int socket_t;
+#define clean_sockfd(sockfd) do { close(sockfd); } while(0)
+#define getOsError() errno
+#endif
+
     /* Things You can edit, to change how library works: */
     struct Config {
-		static constexpr uint16_t BlockSize = 16182;     // smaller -> better for smaller files and bad connections but VERY SLOW
-		// ^ TODO thing crashes with 32k block size XD
+		// TODO thing crashes with 32k block size XD
+		static constexpr uint16_t BlockSize = 1024;     // smaller -> better for smaller files and bad connections but VERY SLOW
         static constexpr uint16_t Timeout = 5;
         static constexpr uint16_t MaxRetries = 5;
     };
     // thats it :)
 
+    /// <summary>
+	/// Error type thrown by TFTP functions.
+    /// </summary>
     class TftpError : public std::runtime_error {
     public:
         enum class ErrorType {
@@ -54,7 +68,18 @@ namespace tftpc {
 
         // nicer printing:
         friend std::ostream& operator<<(std::ostream& os, const TftpError& err) {
-            os << "TFTP error <" << err.code_ << ">: " << err.what();
+            switch (err.type_) {
+			case ErrorType::None: os << "No error"; break;
+            case ErrorType::Lib: os << "Library error"; break;
+			case ErrorType::Tftp: os << "TFTP error"; break;
+			case ErrorType::IO: os << "IO error"; break;
+			case ErrorType::OS: os << "OS error"; break;
+			case ErrorType::Timeout: os << "Timeout"; break;
+			default: os << "Unknown error"; break;
+            }
+            if (err.type_ != ErrorType::None) {
+                os << " <code: " << err.code_ << ">: " << err.what();
+            }
             return os;
         }
 
@@ -84,93 +109,47 @@ namespace tftpc {
     private:
         class CleanupGuard {
         public:
-            CleanupGuard(SOCKET sockfd) : sockfd_(sockfd), needs_cleanup_(true) {}
+            CleanupGuard(socket_t sockfd) : sockfd_(sockfd), needs_cleanup_(true) {}
             ~CleanupGuard() {
-                if (needs_cleanup_) {
-					for (auto& t : threads_) {
-						t.join();
-					}
-
-                    #ifdef _WIN32
-                        closesocket(sockfd_);
-                        WSACleanup();
-                    #else
-                        close(sockfd);
-                    #endif
-                }
+				cleanup();
             }
+			void forceCleanup() { needs_cleanup_ = true; cleanup(); }
             void dismiss() { needs_cleanup_ = false; }
+
 			void guardThread(std::thread&& t) {
 				threads_.push_back(std::move(t));
 			}
+			template <typename T>
+            void guardNew(T* ptr) {
+				news_.push_back(static_cast<void*>(ptr));
+            }
 
         private:
-            SOCKET sockfd_;
+            socket_t sockfd_;
 			std::vector<std::thread> threads_;
+            std::vector<void*> news_;
             bool needs_cleanup_;
+
+			void cleanup() {
+				if (needs_cleanup_) {
+                    if (needs_cleanup_) {
+                        for (auto& t : threads_) {
+                            t.join();
+                        }
+                        for (auto& ptr : news_) {
+                            delete[] ptr;
+                        }
+
+                        clean_sockfd(sockfd_);
+						needs_cleanup_ = false;
+                    }
+				}
+			}
         };
     };
 
     namespace server {
         void handleClient(int sockfd, const std::string& root_dir);
-    }
-    
-    namespace {
-        #ifdef _WIN32
-            typedef int socklen_t;
-            typedef SOCKET socket_t;
-        #else 
-            typedef int socket_t;
-        #endif
-
-        enum class TftpErrorCode : uint16_t {
-            NotDefined = 0,
-            FileNotFound = 1,
-            AccessViolation = 2,
-            DiskFull = 3,
-            IllegalOperation = 4,
-            UnknownTransferId = 5,
-            FileAlreadyExists = 6,
-            NoSuchUser = 7,
-        };
-
-        enum class TftpOpcode : uint16_t {
-            ReadRequest = 1,
-            WriteRequest = 2,
-            Data = 3,
-            Ack = 4,
-            Error = 5,
-            Oack = 6,
-        };
-
-        // u16 {a, b} -> u8 {b}
-        uint8_t getOpcodeByte(TftpOpcode opcode) {
-            return static_cast<uint8_t>(static_cast<uint16_t>(opcode) & 0xFF);
-        }
-
-        void VecPushString(std::vector<uint8_t>& packet, size_t& packet_offset, const char* str) {
-            packet.insert(packet.begin() + packet_offset, str, str + strlen(str));
-            packet.push_back(0);
-            packet_offset += strlen(str) + 1;
-        }
-
-        void VecPushString(std::vector<uint8_t>& packet, size_t& packet_offset, const std::string& str) {
-            packet.insert(packet.begin() + packet_offset, str.begin(), str.end());
-            packet.push_back(0);
-            packet_offset += str.size() + 1;
-        }
-
-        struct Constants {
-            // nice to have when copying memory
-            static constexpr char* modeOctet = "octet";
-            static constexpr size_t modeOctetLen = 5;
-            static constexpr char* optTsize = "tsize";
-            static constexpr size_t optTsizeLen = 5;
-            static constexpr char* optTimeout = "timeout";
-            static constexpr size_t optTimeoutLen = 7;
-            static constexpr char* optBlksize = "blksize";
-            static constexpr size_t optBlksizeLen = 7;
-        };
     }
 }
 
