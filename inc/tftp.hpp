@@ -23,6 +23,8 @@
 #include <mutex>
 #include <thread>
 #include <queue>
+#include <fstream>
+#include <filesystem>
 
 namespace tftpc {
 
@@ -40,11 +42,20 @@ namespace tftpc {
 #endif
 
     /* Things You can edit, to change how library works: */
+
+    // if defined, will use parallel file read, which is faster but uses more memory (up to file size at once at peak)
+	// in other case, data will be read from file as needed (one chunk at the time) - transfer will be limited by disk read speed
+    #define USE_PARALLEL_FILE_READ
+	// if defined, it will use tftp extensions rfc to negotiate transfer parameters (blksize, timeout, file size)
+	// TODO: enforce - for now not implemented and enabled by default
+    #define NEGOTIATE_OPTIONS
+
     struct Config {
 		// TODO thing crashes with 32k block size XD
-		static constexpr uint16_t BlockSize = 1024;     // smaller -> better for smaller files and bad connections but VERY SLOW
+		static constexpr uint16_t BlockSize = 16384;     // smaller -> better for smaller files and bad connections but transfers slow down considerably
         static constexpr uint16_t Timeout = 5;
         static constexpr uint16_t MaxRetries = 5;
+		// TODO: add limit to queue size? - max memory usage limiter
     };
     // thats it :)
 
@@ -68,7 +79,6 @@ namespace tftpc {
         ErrorType getType() const { return type_; }
         int getCode() const { return code_; }
 
-        // nicer printing:
         friend std::ostream& operator<<(std::ostream& os, const TftpError& err) {
             switch (err.type_) {
 			case ErrorType::None: os << "No error"; break;
@@ -150,9 +160,77 @@ namespace tftpc {
         };
     };
 
-    namespace server {
-        void handleClient(int sockfd, const std::string& root_dir);
-    }
+    class ServerResult {
+    public:
+        enum class Type {
+			None,
+			Read,
+			Write,
+		};
+
+		Type type;
+		struct sockaddr_in client_addr;
+		std::string filename;
+		std::streamsize bytes_transferred;
+
+        // nice printing:
+		friend std::ostream& operator<<(std::ostream& os, const ServerResult& result) {
+			// address:port read from/wrote to filename (bytes)
+			os << inet_ntoa(result.client_addr.sin_addr) << ":" << ntohs(result.client_addr.sin_port) << " ";
+            switch (result.type) {
+			case Type::Read: os << "read from "; break;
+			case Type::Write: os << "wrote to "; break;
+			default: os << "unknown action on "; break;
+            }
+			os << result.filename << " (" << result.bytes_transferred << " bytes)";
+			return os;
+	    }
+	};
+
+    class Server {
+    public:
+        static ServerResult handleClient(socket_t sockfd, const std::string& root_dir);
+
+	private:
+        class ServerCleanupGuard {
+        public:
+            ServerCleanupGuard() : needs_cleanup_(true) {}
+            ~ServerCleanupGuard() {
+                cleanup();
+            }
+            void forceCleanup() { needs_cleanup_ = true; cleanup(); }
+            void dismiss() { needs_cleanup_ = false; }
+
+            template <typename T>
+            void guardNew(T* ptr) {
+                news_.push_back(static_cast<void*>(ptr));
+            }
+
+			void guardSocket(socket_t sockfd) {
+				sockfd_ = sockfd;
+			}
+
+        private:
+            socket_t sockfd_;
+            bool needs_cleanup_;
+            std::vector<void*> news_;
+
+            void cleanup() {
+                if (needs_cleanup_) {
+                    for (auto& ptr : news_) {
+                        delete[] ptr;
+                    }
+
+#ifdef _WIN32
+					closesocket(sockfd_);
+#else
+					close(sockfd_);
+#endif
+                    needs_cleanup_ = false;
+                }
+            }
+        };
+    };
 }
 
 

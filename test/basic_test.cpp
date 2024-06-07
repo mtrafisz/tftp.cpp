@@ -1,5 +1,3 @@
-#include <iostream>
-#include <fstream>
 #include "../inc/tftp.hpp"
 #include <ctime>
 #include <sstream>
@@ -22,15 +20,6 @@ int main(void) {
     remote_addr.sin_port = htons(69);
     remote_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    std::ifstream file("../../../test.zip", std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Failed to open file" << std::endl;
-        return 1;
-    }
-	std::streamsize send_size = gss(file);
-
-	std::ofstream ofs("test.zip", std::ios::binary);
-
     float mbps;
     double interval;
     #ifdef _WIN32
@@ -45,18 +34,9 @@ int main(void) {
         clock_gettime(CLOCK_MONOTONIC, &start);
     #endif
 
-    try {
-        tftpc::Client::send(remote_addr, "test.zip", file);
+    std::ofstream ofs("th.zip", std::ios::binary);
 
-        #ifdef _WIN32
-            QueryPerformanceCounter(&end);
-            interval = (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart;
-        #else
-            clock_gettime(CLOCK_MONOTONIC, &end);
-            interval = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-        #endif
-		mbps = (send_size / 1e6) / interval;
-		std::cout << std::fixed << "Sent in: " << interval << "s (" << mbps << "MBps)" << std::endl;
+    try {
 
         #ifdef _WIN32
 		        QueryPerformanceCounter(&start);
@@ -64,7 +44,7 @@ int main(void) {
 		        clock_gettime(CLOCK_MONOTONIC, &start);
         #endif
 
-	    std::streamsize rcvd_size = tftpc::Client::recv(remote_addr, "test.zip", ofs);
+	    std::streamsize rcvd_size = tftpc::Client::recv(remote_addr, "th.zip", ofs);
 
     #ifdef _WIN32
 		QueryPerformanceCounter(&end);
@@ -77,6 +57,32 @@ int main(void) {
 		std::cout << std::fixed << "Received in: " << interval << "s (" << mbps << "MBps)" << std::endl;
 
         ofs.close();
+
+        std::ifstream file("th.zip", std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file" << std::endl;
+            return 1;
+        }
+        std::streamsize send_size = gss(file);
+
+    #ifdef _WIN32
+		QueryPerformanceCounter(&start);
+    #else
+		clock_gettime(CLOCK_MONOTONIC, &start);
+    #endif
+        
+        tftpc::Client::send(remote_addr, "th.zip", file);
+
+        #ifdef _WIN32
+            QueryPerformanceCounter(&end);
+            interval = (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart;
+        #else
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            interval = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+        #endif
+		mbps = (send_size / 1e6) / interval;
+		std::cout << std::fixed << "Sent in: " << interval << "s (" << mbps << "MBps)" << std::endl;
+
     } catch (const tftpc::TftpError& e) {
         std::cerr << e << std::endl;
         ofs.close();
