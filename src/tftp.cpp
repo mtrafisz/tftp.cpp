@@ -213,7 +213,7 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 			auto errn = getOsError();
 
 			switch (errn) {
-			case WSAETIMEDOUT:
+			case TIMEOUT_OS_ERR:
 				retries--;
 				if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
 				goto resend_data_packet;
@@ -340,7 +340,7 @@ skip_zeroAck:
 			auto errn = getOsError();
 
 			switch (errn) {
-			case WSAETIMEDOUT:
+			case TIMEOUT_OS_ERR:
 				retries--;
 				if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
 				continue;
