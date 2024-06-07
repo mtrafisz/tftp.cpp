@@ -71,8 +71,11 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 
 	if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to bind socket");
-
+#ifdef _WIN32
 	DWORD timeout = Config::Timeout * 1000;
+#else
+	struct timeval timeout = { Config::Timeout, 0 };
+#endif
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
@@ -264,8 +267,11 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 
 	if (bind(sockfd, (struct sockaddr*)&local_addr, sizeof(local_addr)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to bind socket");
-
+#ifdef _WIN32
 	DWORD timeout = Config::Timeout * 1000;
+#else
+	struct timeval timeout = { Config::Timeout, 0 };
+#endif
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
