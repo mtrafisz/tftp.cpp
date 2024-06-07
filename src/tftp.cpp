@@ -175,19 +175,37 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 		data_header[2] = block_num >> 8;
 		data_header[3] = block_num & 0xFF;
 
+#ifdef _WIN32
 		WSABUF packet[2];
 		packet[0].buf = data_header;
 		packet[0].len = 4;
 		packet[1].buf = reinterpret_cast<char*>(data_chunk->data());
 		packet[1].len = buffer_offset;
+#else
+		struct iovec packet[2];
+		packet[0].iov_base = data_header;
+		packet[0].iov_len = 4;
+		packet[1].iov_base = data_chunk->data();
+		packet[1].iov_len = buffer_offset;
+
+		struct msghdr msg = {};
+		msg.msg_name = &comm_addr;
+		msg.msg_namelen = comm_addr_len;
+		msg.msg_iov = packet;
+		msg.msg_iovlen = 2;
+#endif
 
 	resend_data_packet:
+#ifdef _WIN32
 		DWORD bytes_sent;
 		DWORD flags = 0;
 
 		if (WSASendTo(sockfd, packet, 2, &bytes_sent, flags, (struct sockaddr*)&comm_addr, comm_addr_len, nullptr, nullptr) == SOCKET_ERROR)
 			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
-
+#else
+		if (sendmsg(sockfd, &msg, 0) == -1)
+			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
+#endif
 		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
 			auto errn = getOsError();
 
