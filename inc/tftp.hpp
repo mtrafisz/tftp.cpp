@@ -27,6 +27,22 @@
 #include <filesystem>
 
 namespace tftpc {
+    /* Things You can edit, to change how library works: */
+
+    // if defined, will use parallel file read, which is faster but uses more memory (up to file size at once at peak)
+	// in other case, data will be read from file as needed (one chunk at the time) - transfer will be limited by disk read speed
+    // WARNING - this adds some overhead to every DATA - ACK transaction, if you're using blksize smaller than 2048, undef it.
+    #define USE_PARALLEL_FILE_IO
+
+    struct Config {
+		// TODO thing crashes with 32k block size XD
+		static constexpr uint16_t BlockSize = 8192;     // smaller -> better for smaller files and bad connections but transfers slow down considerably
+        static constexpr uint16_t Timeout = 5;
+        static constexpr uint16_t MaxRetries = 5;
+        static constexpr std::streamsize MaxQueueSize = 100 * (1 << 20);    // 100 MB by default, max memory usage will be this + around 10%, idk why.
+                                                                            // Only enforced in the Client::send
+    };
+    // thats it :)
 
 #ifdef _WIN32
     typedef SOCKET socket_t;
@@ -40,24 +56,6 @@ namespace tftpc {
 #define getOsError() errno
 #define TIMEOUT_OS_ERR ETIMEDOUT
 #endif
-
-    /* Things You can edit, to change how library works: */
-
-    // if defined, will use parallel file read, which is faster but uses more memory (up to file size at once at peak)
-	// in other case, data will be read from file as needed (one chunk at the time) - transfer will be limited by disk read speed
-    #define USE_PARALLEL_FILE_READ
-	// if defined, it will use tftp extensions rfc to negotiate transfer parameters (blksize, timeout, file size)
-	// TODO: enforce - for now not implemented and enabled by default
-    #define NEGOTIATE_OPTIONS
-
-    struct Config {
-		// TODO thing crashes with 32k block size XD
-		static constexpr uint16_t BlockSize = 16384;     // smaller -> better for smaller files and bad connections but transfers slow down considerably
-        static constexpr uint16_t Timeout = 5;
-        static constexpr uint16_t MaxRetries = 5;
-		// TODO: add limit to queue size? - max memory usage limiter
-    };
-    // thats it :)
 
     /// <summary>
 	/// Error type thrown by TFTP functions.
@@ -160,36 +158,36 @@ namespace tftpc {
         };
     };
 
-    class ServerResult {
-    public:
-        enum class Type {
-			None,
-			Read,
-			Write,
-		};
-
-		Type type;
-		struct sockaddr_in client_addr;
-		std::string filename;
-		std::streamsize bytes_transferred;
-
-        // nice printing:
-		friend std::ostream& operator<<(std::ostream& os, const ServerResult& result) {
-			// address:port read from/wrote to filename (bytes)
-			os << inet_ntoa(result.client_addr.sin_addr) << ":" << ntohs(result.client_addr.sin_port) << " ";
-            switch (result.type) {
-			case Type::Read: os << "read from "; break;
-			case Type::Write: os << "wrote to "; break;
-			default: os << "unknown action on "; break;
-            }
-			os << result.filename << " (" << result.bytes_transferred << " bytes)";
-			return os;
-	    }
-	};
-
     class Server {
     public:
-        static ServerResult handleClient(socket_t sockfd, const std::string& root_dir);
+        class Result {
+        public:
+            enum class Type {
+                None,
+                Read,
+                Write,
+            };
+
+            Type type;
+            struct sockaddr_in client_addr;
+            std::string filename;
+            std::streamsize bytes_transferred;
+
+            // nice printing:
+            friend std::ostream& operator<<(std::ostream& os, const Result& result) {
+                // address:port read from/wrote to filename (bytes)
+                os << inet_ntoa(result.client_addr.sin_addr) << ":" << ntohs(result.client_addr.sin_port) << " ";
+                switch (result.type) {
+                case Type::Read: os << "read from "; break;
+                case Type::Write: os << "wrote to "; break;
+                default: os << "unknown action on "; break;
+                }
+                os << result.filename << " (" << result.bytes_transferred << " bytes)";
+                return os;
+            }
+        };
+        
+        static Result handleClient(socket_t sockfd, const std::string& root_dir);
 
 	private:
         class ServerCleanupGuard {
@@ -210,27 +208,96 @@ namespace tftpc {
 				sockfd_ = sockfd;
 			}
 
+            void guardThread(std::thread&& t) {
+                threads_.push_back(std::move(t));
+            }
+
+			void guardFile(std::ifstream&& file) {
+				file_ = std::move(file);
+			}
+
         private:
             socket_t sockfd_;
             bool needs_cleanup_;
+			std::ifstream file_;
             std::vector<void*> news_;
+            std::vector<std::thread> threads_;
 
             void cleanup() {
                 if (needs_cleanup_) {
+                    for (auto& t : threads_) {
+                        t.join();
+                    }
                     for (auto& ptr : news_) {
                         delete[] ptr;
                     }
-
-#ifdef _WIN32
+					file_.close();
+                #ifdef _WIN32
 					closesocket(sockfd_);
-#else
+                #else
 					close(sockfd_);
-#endif
+                #endif
                     needs_cleanup_ = false;
                 }
             }
         };
     };
+
+    namespace {
+        enum class TftpErrorCode : uint16_t {
+            NotDefined = 0,
+            FileNotFound = 1,
+            AccessViolation = 2,
+            DiskFull = 3,
+            IllegalOperation = 4,
+            UnknownTransferId = 5,
+            FileAlreadyExists = 6,
+            NoSuchUser = 7,
+        };
+
+        enum class TftpOpcode : uint16_t {
+            ReadRequest = 1,
+            WriteRequest = 2,
+            Data = 3,
+            Ack = 4,
+            Error = 5,
+            Oack = 6,
+        };
+
+        // u16 {a, b} -> u8 {b}
+        uint8_t getOpcodeByte(TftpOpcode opcode) {
+            return static_cast<uint8_t>(static_cast<uint16_t>(opcode) & 0xFF);
+        }
+
+        void strncpy_inc_offset(uint8_t* buffer, const char* str, size_t len, uint16_t& offset) {
+            std::copy(str, str + len, buffer + offset);
+            offset += static_cast<uint16_t>(len);
+            buffer[offset++] = '\0';
+        }
+
+        std::streamsize getStreamLength(std::istream& stream) {
+            std::streamsize current = stream.tellg();
+            stream.seekg(0, std::ios::end);
+            std::streamsize length = stream.tellg();
+
+            if (length <= 0) {
+                throw TftpError(TftpError::ErrorType::IO, getOsError(), "Failed to get stream length");
+            }
+
+            stream.seekg(current, std::ios::beg);
+            return length;
+        }
+
+        // safer reinterpret_cast<char*>
+        std::string readStringFromBuffer(uint8_t* buffer, size_t len) {
+            auto null_byte = std::find(buffer, buffer + len, '\0');
+            if (null_byte == buffer + len) {
+                throw TftpError(TftpError::ErrorType::Tftp, 0, "Malformed packet");
+            }
+
+            return std::string(reinterpret_cast<char*>(buffer), null_byte - buffer);
+        }
+    }
 }
 
 
