@@ -41,4 +41,4 @@ Sent in: 6.723765s (147.740158MBps)
 
 - [ ] Documentation
 - [ ] Server rewrite
-- [ ] Progress reporting mechanism=
+- [ ] Progress reporting mechanism
