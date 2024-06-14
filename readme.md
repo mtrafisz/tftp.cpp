@@ -59,6 +59,7 @@ Sent in: 6.723765s (147.740158MBps)
 
 ## Todo
 
-- [ ] Documentation
-- [ ] Server rewrite
 - [X] Progress reporting mechanism
+- [ ] Documentation & comments
+- [ ] Server rewrite(? was it ever implemented?)
+- [ ] Test on unix (I love microsoft)
