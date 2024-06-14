@@ -107,6 +107,7 @@ namespace tftp {
         public:
             size_t total_bytes;
             size_t transferred_bytes;
+            bool transfer_active() const { return transferred_bytes < total_bytes; }
 
             Progress(size_t total_bytes) : total_bytes(total_bytes), transferred_bytes(0) {}
         };

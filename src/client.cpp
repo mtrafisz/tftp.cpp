@@ -270,6 +270,8 @@ void Client::send (
 		buffer_offset = 0;
 	}
 
+	if (progress_callback) progress_callback(progress_data);
+
 	guard.forceCleanup();
 }
 
@@ -526,6 +528,8 @@ std::streamsize Client::recv (
 #ifdef USE_PARALLEL_FILE_IO
 	transfer_done = true;
 #endif
+
+	if (progress_callback) progress_callback(progress_data);
 
 	guard.forceCleanup();
 
