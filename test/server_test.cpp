@@ -52,9 +52,9 @@ int main(void) {
 
 	while (keepRunning) {
 		try {
-			std::cout << tftpc::Server::handleClient(sockfd, "./") << std::endl;
+			std::cout << tftp::Server::handleClient(sockfd, "./") << std::endl;
 		}
-		catch (const tftpc::TftpError& e) {
+		catch (const tftp::TftpError& e) {
 			if (e.getCode() == TIMEOUT_OS_ERR) {
 				std::cout << ".";
 			}

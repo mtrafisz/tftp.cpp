@@ -1,6 +1,7 @@
 #pragma once
 
 #ifdef _WIN32
+#include <WS2tcpip.h>
 #include <winsock2.h>
 #include <windows.h>
 #else
@@ -25,8 +26,10 @@
 #include <queue>
 #include <fstream>
 #include <filesystem>
+#include <functional>
+#include <chrono>
 
-namespace tftpc {
+namespace tftp {
     /* Things You can edit, to change how library works: */
 
     // if defined, will use parallel file read, which is faster but uses more memory (up to file size at once at peak)
@@ -100,21 +103,31 @@ namespace tftpc {
 
     class Client {
     public:
-        /// <summary>
-		/// Attempts to read data from stream and send it to the server via TFTP.
-        /// </summary>
-        /// <param name="remote_addr">IPv4 address of server.</param>
-        /// <param name="filename">How the file will be saved on server.</param>
-        /// <param name="data">Stream containing desired file contents.</param>
-        static void send(const struct sockaddr_in& remote_addr, const std::string& filename, std::istream& data);
-        /// <summary>
-		/// Attempts to read data from server via TFTP and write it to stream.
-        /// </summary>
-		/// <param name="remote_addr">IPv4 address of server.</param>
-		/// <param name="filename">Name of the file on server.</param>
-		/// <param name="data">Stream to write file contents to.</param>'
-		/// <returns>Number of bytes received.</returns>
-        static std::streamsize recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data);
+        class Progress {
+        public:
+            size_t total_bytes;
+            size_t transferred_bytes;
+
+            Progress(size_t total_bytes) : total_bytes(total_bytes), transferred_bytes(0) {}
+        };
+
+        typedef std::function<void(Progress&)> ProgressCallback;
+
+        static void send (
+            const std::string& remote_addr,
+            const std::string& filename,
+            std::istream& data,
+            ProgressCallback progress = nullptr,
+            std::chrono::milliseconds callback_interval = std::chrono::milliseconds(1000)
+        );
+
+        static std::streamsize recv (
+            const std::string& remote_addr,
+            const std::string& filename,
+            std::ostream& data,
+            ProgressCallback progress = nullptr,
+            std::chrono::milliseconds callback_interval = std::chrono::milliseconds(1000)
+        );
     
     private:
         class CleanupGuard {
@@ -176,7 +189,7 @@ namespace tftpc {
             // nice printing:
             friend std::ostream& operator<<(std::ostream& os, const Result& result) {
                 // address:port read from/wrote to filename (bytes)
-                os << inet_ntoa(result.client_addr.sin_addr) << ":" << ntohs(result.client_addr.sin_port) << " ";
+                os << inet_ntop(AF_INET, &result.client_addr.sin_addr, nullptr, 0) << ":" << ntohs(result.client_addr.sin_port) << " ";
                 switch (result.type) {
                 case Type::Read: os << "read from "; break;
                 case Type::Write: os << "wrote to "; break;

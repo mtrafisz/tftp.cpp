@@ -1,6 +1,6 @@
 # tftp.cpp - Full TFTP implementation in C++
 
-Full client & server implementation - made to be minimal but featureful.
+Full client & server implementation - ~~made to be minimal but featureful.~~ HOW IS THE CLIENT ALONE SO BIG ALREADY
 
 ## Building
 
@@ -19,9 +19,29 @@ tftp.hpp exposes some macros and `struct Config` with things you can change to a
 ## Api
 
 ```cpp
-void tftpc::Client::send(const struct sockaddr_in& remote_addr, const std::string& filename, std::istream& data);
+class tftp::Client::Progress {
+public:
+    size_t total_bytes;
+    size_t transferred_bytes;
+    
+    Progress(size_t total_bytes) : total_bytes(total_bytes), transferred_bytes(0) {}
+}
 
-std::streamsize tftpc::Client::recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data);
+typedef std::function<void(tftp::Client::Progress&)> tftp::Client::ProgressCallback;
+
+void tftp::Client::send (
+    const std::string& remote_addr,
+    const std::string& filename,
+    std::istream& data,
+    ProgressCallback progress = nullptr,
+    std::chrono::milliseconds callback_interval = std::chrono::milliseconds(1000));
+
+std::streamsize tftp::Client::recv (
+    const std::string& remote_addr,
+    const std::string& filename,
+    std::ostream& data,
+    ProgressCallback progress = nullptr,
+    std::chrono::milliseconds callback_interval = std::chrono::milliseconds(1000));
 
 ServerResult tftpc::Server::handleClient(socket_t sockfd, const std::string& root_dir);
 ```
@@ -41,4 +61,4 @@ Sent in: 6.723765s (147.740158MBps)
 
 - [ ] Documentation
 - [ ] Server rewrite
-- [ ] Progress reporting mechanism
+- [X] Progress reporting mechanism

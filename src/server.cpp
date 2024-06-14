@@ -1,6 +1,6 @@
 #include "../inc/tftp.hpp"
 
-using namespace tftpc;
+using namespace tftp;
 
 Server::Result Server::handleClient(socket_t sockfd, const std::string& root_dir) {
 	ServerCleanupGuard guard;

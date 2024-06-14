@@ -1,22 +1,51 @@
 #include "../inc/tftp.hpp"
 
-using namespace tftpc;
+using namespace tftp;
 
-void Client::send(const struct sockaddr_in& remote_addr, const std::string& filename, std::istream& data) {
+void Client::send (
+    const std::string& remote_addr_str,
+    const std::string& filename,
+    std::istream& data,
+    ProgressCallback progress_callback,
+    std::chrono::milliseconds callback_interval
+) {
 	std::streamsize length = getStreamLength(data);		// todo - does this allways work?
 
 	/* local address, socket and cleanup guard setup */
 	struct sockaddr_in local_addr = {};
-	local_addr.sin_family = AF_INET;
+    local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(0);
 	size_t local_addr_len = sizeof(local_addr);
 
+    struct sockaddr_in remote_addr = {};
+    remote_addr.sin_family = AF_INET;
+
+    {
+        std::string ip;
+        std::string port;
+        
+        size_t pos = remote_addr_str.find(':');
+        if (pos == std::string::npos) {
+            ip = remote_addr_str;
+            port = "69";
+        } else {
+            ip = remote_addr_str.substr(0, pos);
+            port = remote_addr_str.substr(pos + 1);
+        }
+
+        inet_pton(AF_INET, ip.c_str(), &remote_addr.sin_addr);
+        remote_addr.sin_port = htons(std::stoi(port));
+    }
+
+    if (remote_addr.sin_addr.s_addr == INADDR_NONE)
+        throw TftpError(TftpError::ErrorType::OS, getOsError(), "Invalid IP address");
+
 #ifdef _WIN32
 	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) 
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to initialize Winsock");
-	}
+	
 #endif
 
 	socket_t sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -87,6 +116,21 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	}
 	default:
 		throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
+	}
+
+    /* Progress callback thread */
+    Progress progress_data(length);
+	std::thread progress_thread;
+
+	if (progress_callback) {
+		progress_thread = std::thread ([&progress_callback, &progress_data, &callback_interval] {
+			while (progress_data.transferred_bytes < progress_data.total_bytes) {
+				std::this_thread::sleep_for(callback_interval);
+				progress_callback(std::ref(progress_data));
+			}
+		});
+
+		guard.guardThread(std::move(progress_thread));
 	}
 
 	/* Data chunking and transfer */
@@ -199,6 +243,9 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 				goto resend_data_packet;
 			}
 			block_num++;
+
+			progress_data.transferred_bytes += buffer_offset;
+
 		} break;
 		case static_cast<uint8_t>(TftpOpcode::Error): {
 			auto err_string = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
@@ -226,13 +273,42 @@ void Client::send(const struct sockaddr_in& remote_addr, const std::string& file
 	guard.forceCleanup();
 }
 
-std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::string& filename, std::ostream& data) {
+std::streamsize Client::recv (
+    const std::string& remote_addr_str,
+    const std::string& filename,
+    std::ostream& data,
+    ProgressCallback progress_callback,
+    std::chrono::milliseconds callback_interval
+) {
 	/* local address & socket setup */
 	struct sockaddr_in local_addr = {};
-	local_addr.sin_family = AF_INET;
+    local_addr.sin_family = AF_INET;
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port = htons(0);
 	size_t local_addr_len = sizeof(local_addr);
+
+    struct sockaddr_in remote_addr = {};
+    remote_addr.sin_family = AF_INET;
+
+    {
+        std::string ip;
+        std::string port;
+        
+        size_t pos = remote_addr_str.find(':');
+        if (pos == std::string::npos) {
+            ip = remote_addr_str;
+            port = "69";
+        } else {
+            ip = remote_addr_str.substr(0, pos);
+            port = remote_addr_str.substr(pos + 1);
+        }
+
+        inet_pton(AF_INET, ip.c_str(), &remote_addr.sin_addr);
+        remote_addr.sin_port = htons(std::stoi(port));
+    }
+
+    if (remote_addr.sin_addr.s_addr == INADDR_NONE)
+        throw TftpError(TftpError::ErrorType::OS, getOsError(), "Invalid IP address");
 
 #ifdef _WIN32
 	WSADATA wsaData;
@@ -255,7 +331,6 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 #endif
 	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
-
 
 	/* Create and send the request */
 	uint8_t* buffer = new uint8_t[Config::BlockSize + 4]();
@@ -296,10 +371,32 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	uint8_t ack_buffer[4] = { 0, static_cast<uint8_t>(TftpOpcode::Ack), 0, 0 };
 	uint16_t block_num = 1;
 	std::streamsize total_size = 0;
+	std::streamsize expected_size = 0;
 
 	switch (recv_buffer[1]) {
-	case static_cast<uint8_t>(TftpOpcode::Oack):	// TODO: check if params match
-		break;
+	case static_cast<uint8_t>(TftpOpcode::Oack): {
+		// read the options - save the tsize
+
+		size_t offset = 2;
+		while (offset < recv_offset) {
+			std::string option = readStringFromBuffer(recv_buffer + offset, recv_offset - offset);
+			offset += option.size() + 1;
+			std::string value = readStringFromBuffer(recv_buffer + offset, recv_offset - offset);
+			offset += value.size() + 1;
+
+			if (option == "tsize") {
+				expected_size = std::stoll(value);
+			}
+			else if (option == "blksize") {
+				uint16_t blksize_ack_val = std::stoi(value);
+
+				if (blksize_ack_val > blksize_val) throw TftpError(TftpError::ErrorType::Tftp, 0, "Invalid block size");
+				blksize_val = blksize_ack_val;
+			}
+		}
+
+	break;
+	}
 	case static_cast<uint8_t>(TftpOpcode::Data): {	// negotiation broken, received first data packet
 		uint16_t recv_blknum = (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF);
 		if (recv_blknum != 1)
@@ -324,6 +421,21 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
 	int retries = Config::MaxRetries;
 
 	/* Data receiving loop */
+
+	// Progress callback thread
+	Progress progress_data(expected_size);
+	std::thread progress_thread;
+
+	if (progress_callback) {
+		progress_thread = std::thread([&progress_callback, &progress_data, &callback_interval] {
+			while (progress_data.transferred_bytes < progress_data.total_bytes) {
+				std::this_thread::sleep_for(callback_interval);
+				progress_callback(std::ref(progress_data));
+			}
+		});
+
+		guard.guardThread(std::move(progress_thread));
+	}
 
 #ifdef USE_PARALLEL_FILE_IO
     std::queue<std::unique_ptr<std::vector<uint8_t>>> data_queue;
@@ -400,6 +512,8 @@ std::streamsize Client::recv(const struct sockaddr_in& remote_addr, const std::s
         blksize_val = recv_offset - 4;
         block_num++;
         total_size += blksize_val;
+		
+		progress_data.transferred_bytes += blksize_val;
 
 		// create and send the ack packet
 		ack_buffer[2] = recv_buffer[2];
