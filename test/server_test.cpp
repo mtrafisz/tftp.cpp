@@ -50,9 +50,25 @@ int main(void) {
 #endif
 	setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
+	std::cout << "Server started, listening on port 6969" << std::endl;
+	
+	{
+	std::unordered_map<int, tftp::Server::TransferInfo> transfers;
+	std::unordered_map<int, tftp::Server::TransferInfo>::iterator it;
+
+	tftp::Server::TransferCallback cb = [&transfers](tftp::Server::TransferInfo& info) {
+		// check if transfers[tftp::Server::TransferInfo::Hash()(info)] exists, if not, add it and display info
+		auto hash = tftp::Server::TransferInfo::Hash()(info);
+
+		if (transfers.find(hash) == transfers.end()) {
+			std::cout << "New transfer: " << info << std::endl;
+		}
+		transfers[hash] = info;
+	};
+
 	while (keepRunning) {
 		try {
-			std::cout << tftp::Server::handleClient(sockfd, "./") << std::endl;
+			tftp::Server::handleClient(sockfd, "./", cb);
 		}
 		catch (const tftp::TftpError& e) {
 			if (e.getCode() == TIMEOUT_OS_ERR) {
@@ -61,7 +77,13 @@ int main(void) {
 			else {
 				std::cerr << e << std::endl;
 			}
+		} catch (const std::exception& e) {
+			std::cerr << e.what() << std::endl;
 		}
+		catch (...) {
+			std::cerr << "Unknown exception" << std::endl;
+		}
+	}
 	}
 
 cleanup:

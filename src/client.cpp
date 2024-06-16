@@ -60,7 +60,8 @@ void Client::send (
 #else
 	struct timeval timeout = { Config::Timeout, 0 };
 #endif
-	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1 ||
+		setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
 	uint8_t* buffer = new uint8_t[Config::BlockSize]();
@@ -214,11 +215,22 @@ void Client::send (
 		DWORD flags = 0;
 
 		if (WSASendTo(sockfd, packet, 2, &bytes_sent, flags, (struct sockaddr*)&comm_addr, comm_addr_len, nullptr, nullptr) == SOCKET_ERROR)
-			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 #else
 		if (sendmsg(sockfd, &msg, 0) == -1)
-			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 #endif
+		{
+			auto errn = getOsError();
+
+			switch (errn) {
+			case TIMEOUT_OS_ERR:
+				retries--;
+				if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
+				goto resend_data_packet;
+			default:
+				throw TftpError(TftpError::ErrorType::OS, errn, "Failed to send data");
+			}
+		}
+		
 		// receive the server response (exp. ack)
 		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
 			auto errn = getOsError();
@@ -267,7 +279,9 @@ void Client::send (
 	if (size_divisible) {
 		data_header[2] = block_num >> 8;
 		data_header[3] = block_num & 0xFF;
-		buffer_offset = 0;
+
+		if (sendto(sockfd, reinterpret_cast<char*>(data_header), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1)
+			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 	}
 
 	if (progress_callback) progress_callback(progress_data);
@@ -331,7 +345,8 @@ std::streamsize Client::recv (
 #else
 	struct timeval timeout = { Config::Timeout, 0 };
 #endif
-	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
+	if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1 || 
+		setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to set socket timeout");
 
 	/* Create and send the request */
@@ -499,7 +514,12 @@ std::streamsize Client::recv (
 			throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), err_string);
 		}
 		default:
-			throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
+			retries--;
+			if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
+
+			block_num -= 1;
+			ack_buffer[3] = recv_buffer[3];
+			goto resend_ack_packet;
 		}
 		#ifndef USE_PARALLEL_FILE_IO
         	data.write(reinterpret_cast<char*>(recv_buffer + 4), recv_offset - 4);
@@ -521,9 +541,16 @@ std::streamsize Client::recv (
 		ack_buffer[2] = recv_buffer[2];
 		ack_buffer[3] = recv_buffer[3];
 	resend_ack_packet:
-		if (sendto(sockfd, reinterpret_cast<char*>(ack_buffer), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1)
-			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send ack");
-
+		if (sendto(sockfd, reinterpret_cast<char*>(ack_buffer), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1) {
+			switch (getOsError()) {
+			case TIMEOUT_OS_ERR:
+				retries--;
+				if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
+				goto resend_ack_packet;
+			default:
+				throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send ack");
+			}
+		}
 	} while (blksize_val == Config::BlockSize);
 #ifdef USE_PARALLEL_FILE_IO
 	transfer_done = true;

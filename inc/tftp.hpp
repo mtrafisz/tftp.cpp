@@ -74,6 +74,17 @@ namespace tftp {
             Timeout,
         };
 
+        enum class ErrorCode {
+            None,
+            FileNotFound,
+            AccessViolation,
+            DiskFull,
+            IllegalOperation,
+            UnknownTransferId,
+            FileAlreadyExists,
+            NoSuchUser,
+        };
+
         TftpError(ErrorType type, int code, const std::string& msg)
             : std::runtime_error(msg), type_(type), code_(code) {}
 
@@ -174,7 +185,7 @@ namespace tftp {
 
     class Server {
     public:
-        class Result {
+        class TransferInfo {
         public:
             enum class Type {
                 None,
@@ -185,23 +196,46 @@ namespace tftp {
             Type type;
             struct sockaddr_in client_addr;
             std::string filename;
-            std::streamsize bytes_transferred;
+            std::streamsize transferred_bytes;
+            std::streamsize total_bytes;
 
-            // nice printing:
-            friend std::ostream& operator<<(std::ostream& os, const Result& result) {
-                // address:port read from/wrote to filename (bytes)
-                os << inet_ntop(AF_INET, &result.client_addr.sin_addr, nullptr, 0) << ":" << ntohs(result.client_addr.sin_port) << " ";
-                switch (result.type) {
-                case Type::Read: os << "read from "; break;
-                case Type::Write: os << "wrote to "; break;
-                default: os << "unknown action on "; break;
+            // hash function, based on filename and client address
+            // for for example std::unordered_map:
+            struct Hash {
+                size_t operator()(const TransferInfo& info) const {
+                    size_t hash = std::hash<std::string>{}(info.filename);
+                    hash ^= std::hash<uint32_t>{}(info.client_addr.sin_addr.s_addr);
+                    hash ^= std::hash<uint16_t>{}(info.client_addr.sin_port);
+                    return hash;
                 }
-                os << result.filename << " (" << result.bytes_transferred << " bytes)";
+            };
+
+            // printing:
+            friend std::ostream& operator<<(std::ostream& os, const TransferInfo& info) {
+                os << "TransferInfo { ";
+                os << "type: ";
+                switch (info.type) {
+                case Type::None: os << "None"; break;
+                case Type::Read: os << "Read"; break;
+                case Type::Write: os << "Write"; break;
+                default: os << "Unknown"; break;
+                }
+                os << ", filename: " << info.filename;
+                os << ", transferred_bytes: " << info.transferred_bytes;
+                os << ", total_bytes: " << info.total_bytes;
+                os << " }";
                 return os;
             }
         };
         
-        static Result handleClient(socket_t sockfd, const std::string& root_dir);
+        typedef std::function<void(TransferInfo&)> TransferCallback;
+
+        static void handleClient (
+            socket_t sockfd,
+            const std::string& root_dir,
+            TransferCallback callback = nullptr,
+            std::chrono::milliseconds callback_interval = std::chrono::milliseconds(1000)
+        );
 
 	private:
         class ServerCleanupGuard {
