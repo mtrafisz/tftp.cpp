@@ -9,7 +9,7 @@ void Client::send (
     ProgressCallback progress_callback,
     std::chrono::milliseconds callback_interval
 ) {
-	Config config = Config::getInstance();
+	const Config config = Config::getInstance();
 
 	std::streamsize length = getStreamLength(data);		// todo - does this allways work?
 
@@ -148,9 +148,9 @@ void Client::send (
 	size_t max_data_queue_size = config.getMaxQueueSize() / blksize_val;
 
 	/* Chunk data into vectors with max. size of config.getBlockSize(), except the last one */
-	std::thread data_chunker([&data, &data_queue, &data_queue_mutex, blksize_val, max_data_queue_size] {
+	std::thread data_chunker([&data, &data_queue, &data_queue_mutex, blksize_val, max_data_queue_size, &kill_child_threads] {
 		std::unique_ptr<std::vector<uint8_t>> data_chunk = std::make_unique<std::vector<uint8_t>>(blksize_val);
-		while (data.read(reinterpret_cast<char*>(data_chunk->data()), blksize_val)) {
+		while (data.read(reinterpret_cast<char*>(data_chunk->data()), blksize_val) && !kill_child_threads) {
 			while (data_queue.size() >= max_data_queue_size) continue;
 
 			std::lock_guard<std::mutex> lock(data_queue_mutex);
@@ -224,21 +224,10 @@ void Client::send (
 #else
 		if (sendmsg(sockfd, &msg, 0) == -1)
 #endif
-		{
-			auto errn = getOsError();
-
-			switch (errn) {
-			case TIMEOUT_OS_ERR:
-				retries--;
-				if (retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");
-				goto resend_data_packet;
-			default:
-				throw TftpError(TftpError::ErrorType::OS, errn, "Failed to send data");
-			}
-		}
+		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 		
 		// receive the server response (exp. ack)
-		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize(), 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
+		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize(), 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) == -1) {
 			auto errn = getOsError();
 
 			switch (errn) {
@@ -272,13 +261,7 @@ void Client::send (
 		default:
 			throw TftpError(TftpError::ErrorType::Tftp, recv_buffer[1], "Invalid response opcode");
 		}
-
-// XDDDDD Fix that
-#ifdef USE_PARALLEL_FILE_IO
-	} while (buffer_offset == blksize_val && data_queue.size() != 0);
-#else
 	} while (buffer_offset == blksize_val);
-#endif
 
 	/* send empty data packet to signal end of transfer if there wasn't any data packet
 	 * with size smaller than config.getBlockSize() */
@@ -289,20 +272,17 @@ void Client::send (
 		if (sendto(sockfd, reinterpret_cast<char*>(data_header), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1)
 			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send data");
 	}
-	} catch (TftpError& e) {
+
+	kill_child_threads = true;
+
+	} catch(...) {
 		kill_child_threads = true;
-		throw e;
-	} catch (std::exception& e) {
-		kill_child_threads = true;
-		throw TftpError(TftpError::ErrorType::Lib, 0, e.what());
-	} catch (...) {
-		kill_child_threads = true;
-		throw TftpError(TftpError::ErrorType::OS, 0, "Unknown error");
+		throw;
 	}
 
 	if (progress_callback) progress_callback(progress_data);
 
-	guard.forceCleanup();
+	//guard.forceCleanup();
 }
 
 std::streamsize Client::recv (
@@ -313,7 +293,7 @@ std::streamsize Client::recv (
     std::chrono::milliseconds callback_interval
 ) {
 	// get library config
-	Config& config = Config::getInstance();
+	const Config& config = Config::getInstance();
 
 	/* local address & socket setup */
 	struct sockaddr_in local_addr = {};
@@ -399,7 +379,7 @@ std::streamsize Client::recv (
 	struct sockaddr_in comm_addr = {};
 	socklen_t comm_addr_len = sizeof(comm_addr);
 
-	if ((recv_offset = recvfrom(sockfd, (char*)(recv_buffer), config.getBlockSize(), 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4)
+	if ((recv_offset = recvfrom(sockfd, (char*)(recv_buffer), config.getBlockSize(), 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) == -1)
 		throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to receive a valid response");
 
 	/* Parse the response and send the ack */
@@ -460,6 +440,7 @@ std::streamsize Client::recv (
 
 	bool kill_child_threads = false;
 	Progress progress_data(expected_size);
+	bool transfer_done = false;
 	try {
 	// Progress callback thread
 	std::thread progress_thread;
@@ -478,7 +459,6 @@ std::streamsize Client::recv (
 #ifdef USE_PARALLEL_FILE_IO
     std::queue<std::unique_ptr<std::vector<uint8_t>>> data_queue;
     std::mutex data_queue_mutex;
-	bool transfer_done = false;
 
 	// data writer thread
 	std::thread data_writer([&data, &data_queue, &data_queue_mutex, &transfer_done] {
@@ -501,10 +481,22 @@ std::streamsize Client::recv (
 	guard.guardThread(std::move(data_writer));
 #endif
 
+	int retries = config.getMaxRetries();
+
 	do {
 		// receive the server response (exp. data)
-		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize() + 4, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) < 4) {
-			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to receive response");
+		if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize() + 4, 0, (struct sockaddr*)&comm_addr, &comm_addr_len)) == -1) {
+			auto errn = getOsError();
+
+			switch (errn) {
+			case TIMEOUT_OS_ERR:
+				if (--retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");				
+
+				block_num--;
+				goto resend_ack;
+			default:
+				throw TftpError(TftpError::ErrorType::OS, errn, "Failed to receive response");
+			}
 		}
 
 		// parse the server response
@@ -512,8 +504,13 @@ std::streamsize Client::recv (
 		case static_cast<uint8_t>(TftpOpcode::Data): {
 			uint16_t recv_blknum = (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF);
 			if (recv_blknum != block_num) {
-				throw TftpError(TftpError::ErrorType::Tftp, recv_blknum, "Invalid block number");
+				// resend the ack
+				if (--retries == 0) throw TftpError(TftpError::ErrorType::Tftp, 0, "Max retries exceeded");				
+
+				block_num--;
+				goto resend_ack;
 			}
+			retries = config.getMaxRetries();
 			break;
 		}
 		case static_cast<uint8_t>(TftpOpcode::Error): {
@@ -535,36 +532,34 @@ std::streamsize Client::recv (
 			data_queue.push(std::move(data_chunk));
 		}
 		#endif
-        blksize_val = recv_offset - 4;
-        block_num++;
-        total_size += blksize_val;
-		
-		progress_data.transferred_bytes += blksize_val;
 
+	resend_ack:
 		// create and send the ack packet
 		ack_buffer[2] = recv_buffer[2];
 		ack_buffer[3] = recv_buffer[3];
 		if (sendto(sockfd, reinterpret_cast<char*>(ack_buffer), 4, 0, (struct sockaddr*)&comm_addr, comm_addr_len) == -1) {
 			throw TftpError(TftpError::ErrorType::OS, getOsError(), "Failed to send ack");
 		}
+
+        block_num++;
+        blksize_val = recv_offset - 4;
+        total_size += blksize_val;
+		
+		progress_data.transferred_bytes += blksize_val;
 	} while (blksize_val == config.getBlockSize());
-#ifdef USE_PARALLEL_FILE_IO
+
 	transfer_done = true;
-#endif
-	} catch (TftpError& e) {
+	kill_child_threads = true;
+	
+	} catch(...) {
 		kill_child_threads = true;
-		throw e;
-	} catch (std::exception& e) {
-		kill_child_threads = true;
-		throw TftpError(TftpError::ErrorType::Lib, 0, e.what());
-	} catch (...) {
-		kill_child_threads = true;
-		throw TftpError(TftpError::ErrorType::OS, 0, "Unknown error");
+		transfer_done = true;
+		throw;
 	}
 
 	if (progress_callback) progress_callback(progress_data);
 
-	guard.forceCleanup();
+	//guard.forceCleanup();
 
 	return total_size;
 }
