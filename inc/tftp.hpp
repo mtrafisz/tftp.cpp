@@ -37,15 +37,51 @@ namespace tftp {
     // WARNING - this adds some overhead to every DATA - ACK transaction, if you're using blksize smaller than 2048, undef it.
     #define USE_PARALLEL_FILE_IO
 
-    struct Config {
-		// TODO thing crashes with 32k block size XD
-		static constexpr uint16_t BlockSize = 8192;     // smaller -> better for smaller files and bad connections but transfers slow down considerably
-        static constexpr uint16_t Timeout = 5;
-        static constexpr uint16_t MaxRetries = 5;
-        static constexpr std::streamsize MaxQueueSize = 100 * (1 << 20);    // 100 MB by default, max memory usage will be this + around 10%, idk why.
-                                                                            // Only enforced in the Client::send
+    // struct Config {
+	// 	// TODO thing crashes with 32k block size XD
+	// 	static constexpr uint16_t BlockSize = 8192;     // smaller -> better for smaller files and bad connections but transfers slow down considerably
+    //     static constexpr uint16_t Timeout = 5;
+    //     static constexpr uint16_t MaxRetries = 5;
+    //     static constexpr std::streamsize MaxQueueSize = 300 * (1 << 20);    // 300 MB by default, max memory usage will be this + around 10%, idk why.
+    //                                                                         // WARNING - THIS WILL SLOW DOWN DOWNLOADS CONSIDERABLY IF SET TOO LOW
+    // };
+    // // thats it :)
+
+    class Config {
+    public:
+        static Config& getInstance() {
+            static Config instance;
+            return instance;
+        }
+
+        void setAll(uint16_t block_size, uint16_t timeout, uint16_t max_retries, std::streamsize max_queue_size) {
+            block_size_ = block_size;
+            timeout_ = timeout;
+            max_retries_ = max_retries;
+            max_queue_size_ = max_queue_size;
+        }
+
+        uint16_t getBlockSize() const { return block_size_; }
+        void setBlockSize(uint16_t block_size) { block_size_ = block_size; }
+
+        uint16_t getTimeout() const { return timeout_; }
+        void setTimeout(uint16_t timeout) { timeout_ = timeout; }
+
+        uint16_t getMaxRetries() const { return max_retries_; }
+        void setMaxRetries(uint16_t max_retries) { max_retries_ = max_retries; }
+
+        std::streamsize getMaxQueueSize() const { return max_queue_size_; }
+        void setMaxQueueSize(std::streamsize max_queue_size) { max_queue_size_ = max_queue_size; }
+
+    private:
+        Config() : block_size_(4096), timeout_(5), max_retries_(5), max_queue_size_(300 * (1 << 20)) {}
+
+        uint16_t block_size_;               // smaller -> better for smaller files and bad connections but transfers slow down considerably
+        uint16_t timeout_;                  // in seconds
+        uint16_t max_retries_;              // how many times to retry sending packet
+        std::streamsize max_queue_size_;    // in bytes, max memory usage will be this + around 10%. Default is 300 MB.
+                                            // If set to low, downloads will slow down to speed of disk write.
     };
-    // thats it :)
 
 #ifdef _WIN32
     typedef SOCKET socket_t;
@@ -60,9 +96,6 @@ namespace tftp {
 #define TIMEOUT_OS_ERR ETIMEDOUT
 #endif
 
-    /// <summary>
-	/// Error type thrown by TFTP functions.
-    /// </summary>
     class TftpError : public std::runtime_error {
     public:
         enum class ErrorType {
@@ -90,6 +123,7 @@ namespace tftp {
 
         ErrorType getType() const { return type_; }
         int getCode() const { return code_; }
+		std::string getMessage() const { return what(); }
 
         friend std::ostream& operator<<(std::ostream& os, const TftpError& err) {
             switch (err.type_) {
@@ -343,7 +377,7 @@ namespace tftp {
                 throw TftpError(TftpError::ErrorType::Tftp, 0, "Malformed packet");
             }
 
-            return std::string(reinterpret_cast<char*>(buffer), null_byte - buffer);
+			return std::string(reinterpret_cast<char*>(buffer), null_byte - buffer);
         }
     }
 }

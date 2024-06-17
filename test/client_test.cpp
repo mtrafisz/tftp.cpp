@@ -51,8 +51,7 @@ int main(void) {
 		        clock_gettime(CLOCK_MONOTONIC, &start);
         #endif
 
-		rcvd_size = tftp::Client::recv("127.0.0.1:69", test_filename, ofs, progress_callback, std::chrono::abs(std::chrono::milliseconds(100)));
-        // rcvd_size = tftp::Client::recv("127.0.0.1:69", test_filename, ofs);
+		rcvd_size = tftp::Client::recv("127.0.0.1:69", test_filename, ofs, progress_callback, std::chrono::abs(std::chrono::milliseconds(1000)));
 
     #ifdef _WIN32
 		QueryPerformanceCounter(&end);
@@ -64,7 +63,7 @@ int main(void) {
 		mbps = (float)(rcvd_size / 1e6) / (float)interval;
 		std::cout << std::fixed << "Received in: " << interval << "s (" << mbps << "MBps)" << std::endl;
 
-         ofs.close();
+        ofs.close();
 
         std::ifstream file(test_filename, std::ios::binary);
         if (!file.is_open()) {
@@ -79,8 +78,7 @@ int main(void) {
 		clock_gettime(CLOCK_MONOTONIC, &start);
     #endif
         
-		tftp::Client::send("127.0.0.1:69", test_filename, file, progress_callback, std::chrono::abs(std::chrono::milliseconds(100)));
-        // tftp::Client::send("127.0.0.1:69", test_filename, file);
+		tftp::Client::send("127.0.0.1:69", test_filename, file, progress_callback, std::chrono::abs(std::chrono::milliseconds(1000)));
 
         #ifdef _WIN32
             QueryPerformanceCounter(&end);

@@ -61,10 +61,11 @@ void Server::handleClient (
     TransferCallback callback,
     std::chrono::milliseconds callback_interval
 ){
+    Config config = Config::getInstance();
     ServerCleanupGuard guard;
 
-    uint8_t* buffer = new uint8_t[Config::BlockSize + 4]();
-    uint8_t* recv_buffer = new uint8_t[Config::BlockSize + 4]();
+    uint8_t* buffer = new uint8_t[config.getBlockSize() + 4]();
+    uint8_t* recv_buffer = new uint8_t[config.getBlockSize() + 4]();
     guard.guardNew(buffer);
     guard.guardNew(recv_buffer);
 
@@ -73,7 +74,7 @@ void Server::handleClient (
 
     int recv_offset = -1;
 
-    if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0)
+    if ((recv_offset = recvfrom(sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize() + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0)
         return;
     
     if (recv_buffer[1] != static_cast<uint8_t>(TftpOpcode::ReadRequest) && recv_buffer[1] != static_cast<uint8_t>(TftpOpcode::WriteRequest)) {
@@ -84,22 +85,22 @@ void Server::handleClient (
     TransferInfo info;
 
     uint16_t buffer_offset = 2;
-    std::string request_filename = readStringFromBuffer(recv_buffer + 2, Config::BlockSize + 4 - buffer_offset);
+    std::string request_filename = readStringFromBuffer(recv_buffer + 2, config.getBlockSize() + 4 - buffer_offset);
     buffer_offset += request_filename.size() + 1;
-    std::string mode = readStringFromBuffer(recv_buffer + buffer_offset, Config::BlockSize + 4 - buffer_offset);
+    std::string mode = readStringFromBuffer(recv_buffer + buffer_offset, config.getBlockSize() + 4 - buffer_offset);
     buffer_offset += mode.size() + 1;
 
     bool option_negotiation = false;
     size_t tsize = 0;
-    uint16_t blksize = Config::BlockSize;   // is treated as max block size
-    uint16_t timeout = Config::Timeout;
+    uint16_t blksize = config.getBlockSize();   // is treated as max block size
+    uint16_t timeout = config.getTimeout();
 
     while (buffer_offset < recv_offset) {
         option_negotiation = true;
 
-        std::string option = readStringFromBuffer(recv_buffer + buffer_offset, Config::BlockSize + 4 - buffer_offset);
+        std::string option = readStringFromBuffer(recv_buffer + buffer_offset, config.getBlockSize() + 4 - buffer_offset);
         buffer_offset += option.size() + 1;
-        std::string value = readStringFromBuffer(recv_buffer + buffer_offset, Config::BlockSize + 4 - buffer_offset);
+        std::string value = readStringFromBuffer(recv_buffer + buffer_offset, config.getBlockSize() + 4 - buffer_offset);
         buffer_offset += value.size() + 1;
 
         uint32_t value_int = std::stoul(value);
@@ -109,8 +110,8 @@ void Server::handleClient (
         else if (option == "timeout") timeout = static_cast<uint16_t>(value_int);
     }
 
-    if (blksize > Config::BlockSize) {
-        blksize = Config::BlockSize;
+    if (blksize > config.getBlockSize()) {
+        blksize = config.getBlockSize();
     }
 
     info.type = (recv_buffer[1] == static_cast<uint8_t>(TftpOpcode::ReadRequest)) ? TransferInfo::Type::Read : TransferInfo::Type::Write;
@@ -175,7 +176,7 @@ void Server::handleClient (
         if (sendto(comm_sockfd, reinterpret_cast<char*>(buffer), buffer_offset, 0, (struct sockaddr*)&client_addr, sizeof(client_addr)) < 0)
             throw std::runtime_error("Failed to send OACK packet to client");
         // recv 0 ack
-        if ((recv_offset = recvfrom(comm_sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0)
+        if ((recv_offset = recvfrom(comm_sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize() + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0)
             throw std::runtime_error("Failed to receive data from client");
 
         if (recv_buffer[1] != static_cast<uint8_t>(TftpOpcode::Ack)) {
@@ -214,12 +215,13 @@ void Server::handleClient (
     #ifdef USE_PARALLEL_FILE_IO
         std::queue<std::unique_ptr<std::vector<uint8_t>>> data_queue;
         std::mutex data_queue_mutex;
+        size_t max_queue_size = config.getMaxQueueSize() / blksize;
 
-        std::thread data_chunker([&file, &data_queue, &data_queue_mutex, blksize] {
+        std::thread data_chunker([&file, &data_queue, &data_queue_mutex, blksize, max_queue_size] {
             std::unique_ptr<std::vector<uint8_t>> data_chunk = std::make_unique<std::vector<uint8_t>>(blksize + 4);
 
             while (file.read(reinterpret_cast<char*>(data_chunk->data() + 4), blksize)) {
-                while (data_queue.size() * blksize >= Config::MaxQueueSize) continue;
+                while (data_queue.size() >= max_queue_size) continue;
 
                 {std::lock_guard<std::mutex> lock(data_queue_mutex);
                 data_queue.push(std::move(data_chunk));}
@@ -236,7 +238,7 @@ void Server::handleClient (
         while (data_queue.size() == 0) continue;
     #endif
 
-        int retries = Config::MaxRetries;
+        int retries = config.getMaxRetries();
         bool size_divisible = info.total_bytes % blksize == 0;
 
         do {
@@ -287,7 +289,7 @@ void Server::handleClient (
                 throw std::runtime_error("Failed to send data packet to client");
         #endif
 
-            if ((recv_offset = recvfrom(comm_sockfd, reinterpret_cast<char*>(recv_buffer), Config::BlockSize + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0) {
+            if ((recv_offset = recvfrom(comm_sockfd, reinterpret_cast<char*>(recv_buffer), config.getBlockSize() + 4, 0, (struct sockaddr*)&client_addr, &client_addr_len)) < 0) {
                 auto errnum = getOsError();
 
                 if (errnum == TIMEOUT_OS_ERR) {
@@ -310,11 +312,11 @@ void Server::handleClient (
                         return;
                     }
                     block_num++;
-                    retries = Config::MaxRetries;
+                    retries = config.getMaxRetries();
                     break;
                 }
                 case TftpOpcode::Error: {
-                    std::string error_msg = readStringFromBuffer(recv_buffer + 4, Config::BlockSize + 4 - 4);
+                    std::string error_msg = readStringFromBuffer(recv_buffer + 4, config.getBlockSize() + 4 - 4);
                     throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), error_msg);
                 }
                 default:
