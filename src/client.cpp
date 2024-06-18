@@ -114,7 +114,9 @@ void Client::send (
 		blksize_val = 512;
 		break;
 	case static_cast<uint8_t>(TftpOpcode::Error): {
-		auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+		// auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+		std::string err_msg(recv_offset - 3, '\0');
+		std::copy(recv_buffer + 4, recv_buffer + recv_offset, err_msg.begin());
 		throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), err_msg);
 	}
 	default:
@@ -255,7 +257,9 @@ void Client::send (
 
 		} break;
 		case static_cast<uint8_t>(TftpOpcode::Error): {
-			auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+			// auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+			std::string err_msg(recv_offset - 3, '\0');
+			std::copy(recv_buffer + 4, recv_buffer + recv_offset, err_msg.begin());
 			throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), err_msg);
 		}
 		default:
@@ -426,7 +430,9 @@ std::streamsize Client::recv (
 		break;
 	}
 	case static_cast<uint8_t>(TftpOpcode::Error): {
-		auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+		// auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+		std::string err_msg(recv_offset - 3, '\0');
+		std::copy(recv_buffer + 4, recv_buffer + recv_offset, err_msg.begin());
 		throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), err_msg);
 	}
 	default:
@@ -514,7 +520,9 @@ std::streamsize Client::recv (
 			break;
 		}
 		case static_cast<uint8_t>(TftpOpcode::Error): {
-			auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+			// auto err_msg = readStringFromBuffer(recv_buffer + 4, recv_offset - 4);
+			std::string err_msg(recv_offset - 3, '\0');
+			std::copy(recv_buffer + 4, recv_buffer + recv_offset, err_msg.begin());
 			throw TftpError(TftpError::ErrorType::Tftp, (recv_buffer[2] << 8) | (recv_buffer[3] & 0xFF), err_msg);
 		}
 		default:

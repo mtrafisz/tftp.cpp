@@ -24,7 +24,7 @@ int main(void) {
     remote_addr.sin_port = htons(69);
     inet_pton(AF_INET, "127.0.0.1", &remote_addr.sin_addr);
 
-    const std::string test_filename = "debian.iso"; // ~ 630 MB
+    const std::string test_filename = "th.zip"; // ~ 950 MB
     std::streamsize rcvd_size = 0;
 
     float mbps;
@@ -41,7 +41,7 @@ int main(void) {
         clock_gettime(CLOCK_MONOTONIC, &start);
     #endif
 
-     std::ofstream ofs(test_filename, std::ios::binary);
+    std::ofstream ofs(test_filename, std::ios::binary);
 
     try {
 
